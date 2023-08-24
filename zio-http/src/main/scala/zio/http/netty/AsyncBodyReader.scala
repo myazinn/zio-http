@@ -25,6 +25,7 @@ import zio.http.netty.NettyBody.UnsafeAsync
 import io.netty.buffer.ByteBufUtil
 import io.netty.channel.{ChannelHandlerContext, SimpleChannelInboundHandler}
 import io.netty.handler.codec.http.{HttpContent, LastHttpContent}
+
 abstract class AsyncBodyReader(implicit trace: Trace) extends SimpleChannelInboundHandler[HttpContent](true) {
 
   protected val unsafeClass: Unsafe = Unsafe.unsafe
@@ -37,14 +38,21 @@ abstract class AsyncBodyReader(implicit trace: Trace) extends SimpleChannelInbou
   def connect(callback: UnsafeAsync): Unit = {
     this.synchronized {
       state match {
-        case State.Buffering =>
+        case State.Buffering   =>
           state = State.Direct(callback)
           buffer.result().foreach { case (chunk, isLast) =>
             callback(chunk, isLast)
           }
           ctx.read()
-        case State.Direct(_) =>
+        case State.Direct(_)   =>
           throw new IllegalStateException("Cannot connect twice")
+        case State.Done(error) =>
+          throw error.getOrElse {
+            new IllegalStateException {
+              "Cannot connect to a closed channel." +
+                "If you are making a Request, make sure you are reading response body within the request Scope."
+            }
+          }
       }
     }
   }
@@ -74,31 +82,42 @@ abstract class AsyncBodyReader(implicit trace: Trace) extends SimpleChannelInbou
           callback(chunk, isLast)
           ctx.read()
       }
+      if (isLast) {
+        state = State.Done(None)
+        ctx.channel().pipeline().remove(this)
+      }
     }
-
-    if (isLast) {
-      ctx.channel().pipeline().remove(this)
-    }: Unit
   }
 
   override def exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable): Unit = {
     this.synchronized {
       state match {
         case State.Buffering        =>
+          state = State.Done(Some(cause))
+        case State.Done(err)        =>
+          state = State.Done(err.orElse(Some(cause)))
         case State.Direct(callback) =>
           callback.fail(cause)
       }
     }
     super.exceptionCaught(ctx, cause)
   }
+
+  override def channelInactive(ctx: ChannelHandlerContext): Unit = {
+    this.synchronized {
+      state = State.Done(None)
+    }
+    super.channelInactive(ctx)
+  }
+
 }
 
 object AsyncBodyReader {
   sealed trait State
 
   object State {
-    case object Buffering extends State
-
-    final case class Direct(callback: UnsafeAsync) extends State
+    case object Buffering                           extends State
+    final case class Direct(callback: UnsafeAsync)  extends State
+    final case class Done(error: Option[Throwable]) extends State
   }
 }

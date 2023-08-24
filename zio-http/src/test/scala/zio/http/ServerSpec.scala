@@ -29,6 +29,12 @@ import zio.stream.{ZPipeline, ZStream}
 import zio.http.html.{body, div, id}
 import zio.http.internal.{DynamicServer, HttpGen, HttpRunnableSpec}
 
+/**
+ * [error] Failed tests:
+[error]         zio.http.ServerSpec
+[error]         zio.http.endpoint.EndpointSpec
+
+ */
 object ServerSpec extends HttpRunnableSpec {
 
   private val nonEmptyContent = for {
